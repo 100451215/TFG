@@ -1,0 +1,10 @@
+{
+    "idf.flashType": "UART",
+    "idf.portWin": "COM5",
+    "files.associations": {
+        "stat.h": "c",
+        "am2302_rmt.h": "c",
+        "xstring": "c",
+        "xutility": "c"
+    }
+}
