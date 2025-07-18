@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "medidor",
-    "project_version":    "2753b3e-dirty",
+    "project_version":    "4ce054f-dirty",
     "project_path":       "C:/Users/manua/Escritorio/programas/TFG/TFG/medidor",
     "idf_path":           "C:/Users/manua/esp/v5.3.1/esp-idf",
     "build_dir":          "C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build",

@@ -23,6 +23,7 @@
 #include "esp_clk_tree.h"
 #include "esp_pm.h"
 
+
  
 
 #include "esp_system.h"
@@ -108,14 +109,14 @@ float *y1_cf = &y_cf[0];
 //uint32_t frec_MH;
 // parametros medidas
 int numero_medidas;
-int max_medidas = 60; //30
-int delay_medidas = 10; //10 //segundos
+int max_medidas = 6*2*12; //12 * 12; //30
+int delay_medidas = 5 * 60; //segundos
 
 
 // variables percepcion
-uint32_t ciclo_final;
-uint32_t ciclo_inicio;
-int32_t ciclos_total;
+uint64_t ciclo_final;
+uint64_t ciclo_inicio;
+uint64_t ciclos_total;
 int64_t t_final;
 int64_t t_inicio;
 float t_total;
@@ -124,8 +125,10 @@ float humedad;
 float temperatura;
 float temp_cpu;
 
-bool end = false;
+bool end_dht = false;
 bool end_benchmark = false;
+bool end_ccl_tracker = false;
+bool flag_ccl_tracker = false;
 
 
 //uint16_t rawHumidity = 0;
@@ -341,7 +344,7 @@ void dht_task(void *pvParameter) {
     };
     gpio_config(&io_conf);
 
-    while (!end) {
+    while (!end_dht) {
         memset(data, 0, sizeof(data));
 
         // Preparar el pin en estado HIGH (reposo)
@@ -402,6 +405,8 @@ void dht_task(void *pvParameter) {
 
         vTaskDelay(pdMS_TO_TICKS(2000));  // Esperar 2 segundos
     }
+    ESP_LOGI(TAG, "Fin de la lectura del sensor de temperatura externo");
+    vTaskDelete(NULL);
 }
 
 void benchmark(void *pvParameter){
@@ -434,6 +439,20 @@ void benchmark(void *pvParameter){
     vTaskDelete(NULL);
 }
 
+void ccl_tracker(void *pvParameter){
+    while (!end_ccl_tracker){
+        if (!flag_ccl_tracker){
+            ciclo_final = ciclo_final + esp_cpu_get_cycle_count();
+            esp_cpu_set_cycle_count(0);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        } else { 
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+    ESP_LOGI(TAG, "Fin de la ejecucion del ccl_tracker");
+    vTaskDelete(NULL);
+}
+
 void configuracion_frecuencia(int cmax){
     mi_conf.max_freq_mhz = cmax; //160 max fisico y default
     mi_conf.min_freq_mhz = 80;
@@ -449,7 +468,7 @@ void tomar_medidas(){
     //ESP_LOGI(TAG, "aaa %f, %lld, %lld", t_total, t_inicio, t_final);
 
     // tiempo de fin
-    ciclo_final = esp_cpu_get_cycle_count();
+    ciclo_final = ciclo_final + esp_cpu_get_cycle_count();
     t_final = esp_timer_get_time();
 
     //transformacion de datos
@@ -457,26 +476,23 @@ void tomar_medidas(){
     t_total = (t_final - t_inicio)/1e6;
 
     printLocalTime(); // muestra la hora
-    ESP_LOGI(TAG, "La frecuencia es %f H, se han hecho %"PRId32" ciclos, el tiempo de %f, la temperatura es de %f ºC la luminosidad de %d %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
-    //ESP_LOGI(TAG, "%"PRId32" %"PRId32"",(int32_t)ciclo_inicio,(int32_t)ciclos_total );
-    //ESP_LOGI(TAG, "EXTERNO: Humedad: %.1f %%\tTemperatura: %.1f °C\n", humedad, temperatura);
+    ESP_LOGI(TAG, "%lld - %lld", ciclo_final, ciclo_inicio);
+    ESP_LOGI(TAG, "La frecuencia es %f H, se han hecho %lld ciclos, el tiempo de %f, la temperatura es de %f ºC la luminosidad de %d %u %u\n", (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
     const char *file_mediciones = MOUNT_POINT"/datos.txt"; //(!)
     char data[EXAMPLE_MAX_CHAR_SIZE];
-    //memset(data, 0, EXAMPLE_MAX_CHAR_SIZE);
-    //snprintf(data, EXAMPLE_MAX_CHAR_SIZE, " %fHz, %ldCcl, %fseg, %fºC, cpu, %dlm, %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s: %.0fHz, %ldCcl, %.3fseg, %.2fC cpu, %dlm, %.1fHum, %.1fC\n", strftime_buf, (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), humedad, temperatura);  
+    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s: %.0fHz, %lldCcl, %.3fseg, %.2fC cpu, %dlm, %.1fHum, %.1fC\n", strftime_buf, (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), humedad, temperatura);  
     ret = s_example_write_file(file_mediciones, data);
     if (ret != ESP_OK) {
         return;
     }
 }
 
-void w_separador(){
+void w_separador(char *mensaje){
     const char *file_mediciones = MOUNT_POINT"/datos.txt"; //(!)
     char data[EXAMPLE_MAX_CHAR_SIZE];
     //memset(data, 0, EXAMPLE_MAX_CHAR_SIZE);
     //snprintf(data, EXAMPLE_MAX_CHAR_SIZE, " %fHz, %ldCcl, %fseg, %fºC, cpu, %dlm, %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "@\n");  
+    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "\n%s\n", mensaje);  
     ret = s_example_write_file(file_mediciones, data);
     if (ret != ESP_OK) {
         return;
@@ -657,9 +673,9 @@ void app_main(void)
     struct tm tm;
     tm.tm_year = 2025 - 1900;
     tm.tm_mon = 6;
-    tm.tm_mday = 15;
-    tm.tm_hour = 10;
-    tm.tm_min = 4;
+    tm.tm_mday = 18;
+    tm.tm_hour = 9;
+    tm.tm_min = 30;
     tm.tm_sec = 0;
     time_t t = mktime(&tm);
     printf("Setting time: %s", asctime(&tm));
@@ -815,7 +831,8 @@ void app_main(void)
 
     //xTaskCreatePinnedToCore(monitoreo, "tarea_monitoreo", 4096, (void*)ret, 2, NULL, tskNO_AFFINITY);
 
-    for (int i = 0; i < 3; i++) //repeticiones proceso
+    // tomas multiples casos - 3 iteraciones
+    /*for (int i = 0; i < 3; i++) //repeticiones proceso
     {
         for (int j = 0; j < 3; j++) // cada una de las pruebas 
         {
@@ -865,7 +882,7 @@ void app_main(void)
 
             case 2:
                 //para y prepara caso 1
-                vTaskDelay(pdMS_TO_TICKS(20000));
+                vTaskDelay(pdMS_TO_TICKS(20000));//1200000
                 end_benchmark = true;
                 configuracion_frecuencia(160);
                 ESP_LOGI(TAG, "prepara caso 1");
@@ -876,10 +893,152 @@ void app_main(void)
                 break;
             }
         }
+    }*/
+
+    /*flag_ccl_tracker = true;
+    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+
+    while (numero_medidas < max_medidas){
+
+        // realiza las operaciones necesarias para tomar los datos
+        esp_cpu_set_cycle_count(0);
+
+        // leer datos de tiempo al inicio
+        ciclo_inicio = esp_cpu_get_cycle_count(); // 0
+        t_inicio = esp_timer_get_time();
+        t_total = 0;
+        
+        flag_ccl_tracker = false;
+        
+        //wait
+        while (t_total < delay_medidas){
+            t_final = esp_timer_get_time();
+            t_total = (t_final - t_inicio)/1e6;
+        }
+        
+        flag_ccl_tracker = true;
+        tomar_medidas();
+        ciclo_final = 0;
+        //w_separador("probando separador");
+
+        numero_medidas++;
+        //delay_medidas = delay_medidas + 10;
+        //vTaskDelay(pdMS_TO_TICKS(1200000));
+
     }
 
-    configuracion_frecuencia(160);
+    end_ccl_tracker = true;
     end_benchmark = true;
+    numero_medidas = 0;
+    //w_separador();*/
+
+    /*flag_ccl_tracker = true;
+    end_benchmark = false;
+    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+    w_separador("caso 1 - 160 MHz con carga");
+
+    for (int i = 0; i < 1; i++) //repeticiones proceso
+    {
+        for (int j = 0; j < 3; j++) // cada una de las pruebas 
+        {
+            
+            xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+    
+            while (numero_medidas < max_medidas){
+
+                // realiza las operaciones necesarias para tomar los datos
+                esp_cpu_set_cycle_count(0);
+
+                // leer datos de tiempo al inicio
+                ciclo_inicio = esp_cpu_get_cycle_count(); // 0
+                t_inicio = esp_timer_get_time();
+                t_total = 0;
+                
+
+                //wait
+                flag_ccl_tracker = false;
+                while (t_total < delay_medidas){
+                    t_final = esp_timer_get_time();
+                    t_total = (t_final - t_inicio)/1e6;
+                }
+                flag_ccl_tracker = true;
+                tomar_medidas();
+                ciclo_final = 0;
+                numero_medidas++;
+
+            }
+
+            end_benchmark = true;
+            numero_medidas = 0;
+
+            switch (j)
+            {
+            case 0:
+                //prepara caso 2
+                w_separador("caso 2 - 80 MHz con carga");
+                max_medidas = 6 * 20;
+                end_benchmark = false;
+                configuracion_frecuencia(80);
+                ESP_LOGI(TAG, "prepara caso 2");
+                break;
+            
+            case 1:
+                //prepara caso 3
+                w_separador("caso 3 - 80 MHz sin carga");
+                end_benchmark = true;
+                configuracion_frecuencia(80);
+                ESP_LOGI(TAG, "prepara caso 3");
+                break;
+
+            case 2:
+                w_separador("FIN");
+                //prepara caso 1
+                end_benchmark = false;
+                configuracion_frecuencia(160);
+                ESP_LOGI(TAG, "prepara caso 1");
+                break;
+            
+            default:
+                ESP_LOGI(TAG, "ALGO VA MAL%d", i);
+                break;
+            }
+        }
+    }*/
+
+    end_benchmark = false;
+    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+    w_separador("ANALISIS DIARIO DEL CLIMA: SIN CARGA 160MHz");
+
+    while (numero_medidas < max_medidas){
+
+        // realiza las operaciones necesarias para tomar los datos
+        esp_cpu_set_cycle_count(0);
+
+        // leer datos de tiempo al inicio
+        ciclo_inicio = esp_cpu_get_cycle_count(); // 0
+        t_inicio = esp_timer_get_time();
+        t_total = 0;
+        
+
+        //wait
+        flag_ccl_tracker = false;
+        while (t_total < delay_medidas){
+            t_final = esp_timer_get_time();
+            t_total = (t_final - t_inicio)/1e6;
+        }
+        //vTaskDelay(pdMS_TO_TICKS(delay_medidas * 1000));
+        
+        flag_ccl_tracker = true;
+        tomar_medidas();
+        ciclo_final = 0;
+        numero_medidas++;
+
+    }
+
+    end_benchmark = true;
+    configuracion_frecuencia(160);
+    end_ccl_tracker = true;
+    end_dht= true;
 
     temperature_sensor_disable(temp_handle);
 
