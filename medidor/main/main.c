@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_clk_tree.h"
 #include "esp_pm.h"
+#include "led_strip.h"
 
 
  
@@ -51,7 +52,7 @@ static const char *TAG = "TFG";
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #endif
 
-#define EXAMPLE_MAX_CHAR_SIZE    128 // buffer de paso de datos a la microsd
+#define EXAMPLE_MAX_CHAR_SIZE    172 // buffer de paso de datos a la microsd
 
 #define MOUNT_POINT "/sdcard" // fichero raiz microsd
 
@@ -109,8 +110,8 @@ float *y1_cf = &y_cf[0];
 //uint32_t frec_MH;
 // parametros medidas
 int numero_medidas;
-int max_medidas = 6*2*12; //12 * 12; //30
-int delay_medidas = 5 * 60; //segundos
+int max_medidas = 10; // 6*2*12; //12 * 12; //30
+int delay_medidas = 5;//5 * 12; //segundos
 
 
 // variables percepcion
@@ -146,7 +147,11 @@ temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAU
 //sensor luz
 esp_pm_config_t mi_conf;
 i2c_config_t config_luz;
+#ifndef I2C_NUM_1
+#define I2C_NUM_1 1
+#endif
 uint8_t r[2]; //lectura luz
+uint8_t r2[2]; //lectura luz
 //comandos sensor luz
 uint8_t read_command = 0x10;
 uint8_t w = 0x01;
@@ -166,6 +171,8 @@ const char *ssid = "Nombre de red";
 const char *pass = "Contrasena";
 int retry_num=0;
 
+static led_strip_handle_t led_strip;
+
 //microsd
 esp_err_t ret;
 
@@ -184,45 +191,6 @@ static void process_and_show(float *data, int length)
 
     // Show power spectrum in 64x10 window from -100 to 0 dB from 0..N/4 samples
     //dsps_view(data, length / 2, 64, 10,  -120, 40, '|');
-}
-
-// escritura
-static esp_err_t s_example_write_file(const char *path, char *data)
-{
-    ESP_LOGI(TAG, "Opening file %s", path);
-    FILE *f = fopen(path, "a");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for writing");
-        return ESP_FAIL;
-    }
-    fprintf(f, data);
-    fclose(f);
-    ESP_LOGI(TAG, "File written");
-
-    return ESP_OK;
-}
-
-// lectura (desuso)
-static esp_err_t s_example_read_file(const char *path)
-{
-    ESP_LOGI(TAG, "Reading file %s", path);
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
-        return ESP_FAIL;
-    }
-    char line[EXAMPLE_MAX_CHAR_SIZE];
-    fgets(line, sizeof(line), f);
-    fclose(f);
-
-    // strip newline
-    char *pos = strchr(line, '\n');
-    if (pos) {
-        *pos = '\0';
-    }
-    ESP_LOGI(TAG, "Read from file: '%s'", line);
-
-    return ESP_OK;
 }
 
 static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_base, int32_t event_id,void *event_data){
@@ -321,6 +289,75 @@ void printLocalTime(){
 
 
 }
+// led interno
+#define BLINK_GPIO CONFIG_BLINK_GPIO
+
+static uint8_t s_led_state = 1;
+
+#ifdef CONFIG_BLINK_LED_STRIP
+
+static led_strip_handle_t led_strip;
+
+static void blink_led(int r, int g, int b)
+{
+    /* If the addressable LED is enabled */
+    if (s_led_state) {
+        /* Set the LED pixel using RGB from 0 (0%) to 255 (100%) for each color */
+        led_strip_set_pixel(led_strip, 0, r, g, b);
+        /* Refresh the strip to send data */
+        led_strip_refresh(led_strip);
+    } else {
+        /* Set all LED off to clear all pixels */
+        led_strip_clear(led_strip);
+    }
+}
+
+static void configure_led(void)
+{
+    ESP_LOGI(TAG, "Example configured to blink addressable LED1!");
+    /* LED strip initialization with the GPIO and pixels number*/
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = BLINK_GPIO,
+        .max_leds = 1, // at least one LED on board
+    };
+#if CONFIG_BLINK_LED_STRIP_BACKEND_RMT
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = 10 * 1000 * 1000, // 10MHz
+        .flags.with_dma = false,
+    };
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+#elif CONFIG_BLINK_LED_STRIP_BACKEND_SPI
+    led_strip_spi_config_t spi_config = {
+        .spi_bus = SPI2_HOST,
+        .flags.with_dma = true,
+    };
+    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &led_strip));
+#else
+#error "unsupported LED strip backend"
+#endif
+    /* Set all LED off to clear all pixels */
+    led_strip_clear(led_strip);
+}
+
+#elif CONFIG_BLINK_LED_GPIO
+
+static void blink_led(void)
+{
+    /* Set the GPIO level according to the state (LOW or HIGH)*/
+    gpio_set_level(BLINK_GPIO, s_led_state);
+}
+
+static void configure_led(void)
+{
+    ESP_LOGI(TAG, "Example configured to blink GPIO LED2!");
+    gpio_reset_pin(BLINK_GPIO);
+    /* Set the GPIO as a push/pull output */
+    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
+}
+
+#else
+#error "unsupported LED type"
+#endif
 
 // usado por dht_task
 int wait_for_level(int level, int timeout_us) {
@@ -384,7 +421,7 @@ void dht_task(void *pvParameter) {
             if (wait_for_level(0, TIMEOUT_US) < 0) break;
             int64_t duration = esp_timer_get_time() - start;
 
-            int byte_index = i / 8;
+            int byte_index = i / 8; //0, 1, 2 3 o 4
             data[byte_index] <<= 1;
             if (duration > 40) {
                 data[byte_index] |= 1;  // Bit 1
@@ -422,7 +459,7 @@ void benchmark(void *pvParameter){
             }
             process_and_show(y_cf, N);
 
-            ESP_LOGI(TAG, "*** Multiply tone signal with Hann window by esp-dsp basic math functions. ***");
+            //ESP_LOGI(TAG, "*** Multiply tone signal with Hann window by esp-dsp basic math functions. ***");
             // Convert two input vectors to one complex vector with basic functions
             dsps_mul_f32(x1, wind, y_cf, N, 1, 1, 2); // Multiply input array with window and store as real part
             dsps_mulc_f32(&y_cf[1], &y_cf[1], N, 0, 2, 2); // Clear imaginary part of the complex signal
@@ -453,6 +490,86 @@ void ccl_tracker(void *pvParameter){
     vTaskDelete(NULL);
 }
 
+// esto se puede mejorar :p
+void led_alarm(){
+     while (1) {
+        //ESP_LOGI(TAG, "Turning the LED %s!", s_led_state == true ? "ON" : "OFF");
+        blink_led(16,0,0);
+        /* Toggle the LED state */
+        s_led_state = !s_led_state;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    
+}
+
+void led_ok(void *pvParameter){
+    blink_led(0,16,0);
+    s_led_state = !s_led_state;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    blink_led(0,16,0);
+    s_led_state = !s_led_state;
+    vTaskDelete(NULL);
+}
+
+void led_finish(void *pvParameter){
+    while (1) {
+        blink_led(0,0,16);
+        s_led_state = !s_led_state;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+// escritura
+static esp_err_t s_example_write_file(const char *path, char *data)
+{
+    ESP_LOGI(TAG, "Opening file %s", path);
+    FILE *f = fopen(path, "a");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        led_alarm();
+        return ESP_FAIL;
+    }
+    int g = fprintf(f, data);
+    if (g == -1) {
+        ESP_LOGE(TAG, "Failed while trying to write");
+        led_alarm();
+        return ESP_FAIL;
+    }
+    int h = fclose(f);
+    if (h == -1) {
+        ESP_LOGE(TAG, "Failed while trying to write");
+        led_alarm();
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "File written");
+    xTaskCreate(led_ok, "ok_feedback", 2048, NULL, 5, NULL);
+
+    return ESP_OK;
+}
+
+// lectura (desuso)
+static esp_err_t s_example_read_file(const char *path)
+{
+    ESP_LOGI(TAG, "Reading file %s", path);
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for reading");
+        return ESP_FAIL;
+    }
+    char line[EXAMPLE_MAX_CHAR_SIZE];
+    fgets(line, sizeof(line), f);
+    fclose(f);
+
+    // strip newline
+    char *pos = strchr(line, '\n');
+    if (pos) {
+        *pos = '\0';
+    }
+    ESP_LOGI(TAG, "Read from file: '%s'", line);
+
+    return ESP_OK;
+}
+
 void configuracion_frecuencia(int cmax){
     mi_conf.max_freq_mhz = cmax; //160 max fisico y default
     mi_conf.min_freq_mhz = 80;
@@ -460,8 +577,15 @@ void configuracion_frecuencia(int cmax){
     esp_pm_configure(&mi_conf);
 }
 
-void tomar_medidas(){
-    i2c_master_write_read_device(I2C_NUM_0, 0x23, &read_command, 1, r, 2, pdMS_TO_TICKS(180));// lectura continua luminosidad
+void tomar_medidas(int caso){
+    i2c_master_write_read_device(I2C_NUM_0, 0x23, &read_command, 1, r, 2, pdMS_TO_TICKS(180));// lectura continua luminosidad - gnd
+    //ESP_LOGI(TAG, "prueba %d", (int)(r[0]*256 + r[1]));
+
+    if (caso == 3){
+        i2c_master_write_read_device(I2C_NUM_0, 0x5c, &read_command, 1, r2, 2, pdMS_TO_TICKS(180));// lectura continua luminosidad - 3.3v
+        //ESP_LOGI(TAG, "prueba %d", (int)(r2[0]*256 + r2[1]));
+    }
+    
 
     temperature_sensor_get_celsius(temp_handle, &temp_cpu); //lectura temperatura cpu
 
@@ -477,10 +601,15 @@ void tomar_medidas(){
 
     printLocalTime(); // muestra la hora
     ESP_LOGI(TAG, "%lld - %lld", ciclo_final, ciclo_inicio);
-    ESP_LOGI(TAG, "La frecuencia es %f H, se han hecho %lld ciclos, el tiempo de %f, la temperatura es de %f ºC la luminosidad de %d %u %u\n", (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
+    ESP_LOGI(TAG, "La frecuencia es %f H, se han hecho %lld ciclos, el tiempo de %f, la temperatura es de %f ºC la luminosidad de %d %u %u %d\n", (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]), (int)(r2[0]*256 + r2[1]));
     const char *file_mediciones = MOUNT_POINT"/datos.txt"; //(!)
     char data[EXAMPLE_MAX_CHAR_SIZE];
-    snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s: %.0fHz, %lldCcl, %.3fseg, %.2fC cpu, %dlm, %.1fHum, %.1fC\n", strftime_buf, (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), humedad, temperatura);  
+    if (caso == 3){
+        snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s: %.0fHz, %lldCcl, %.3fseg, %.2fC cpu, %dlm, %dlm filtrada, %.1fHum, %.1fC\n", strftime_buf, (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (int)(r2[0]*256 + r2[1]),humedad, temperatura);  
+    } else{
+        snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s: %.0fHz, %lldCcl, %.3fseg, %.2fC cpu, %dlm, %.1fHum, %.1fC\n", strftime_buf, (float)(ciclos_total/t_total), ciclos_total, (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), humedad, temperatura);  
+    }
+
     ret = s_example_write_file(file_mediciones, data);
     if (ret != ESP_OK) {
         return;
@@ -491,7 +620,6 @@ void w_separador(char *mensaje){
     const char *file_mediciones = MOUNT_POINT"/datos.txt"; //(!)
     char data[EXAMPLE_MAX_CHAR_SIZE];
     //memset(data, 0, EXAMPLE_MAX_CHAR_SIZE);
-    //snprintf(data, EXAMPLE_MAX_CHAR_SIZE, " %fHz, %ldCcl, %fseg, %fºC, cpu, %dlm, %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
     snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "\n%s\n", mensaje);  
     ret = s_example_write_file(file_mediciones, data);
     if (ret != ESP_OK) {
@@ -499,138 +627,44 @@ void w_separador(char *mensaje){
     }
 }
 
-/*static void monitoreo(void *arg)
-{
-    esp_err_t ret = arg;//a
-
+void protocolo_medicion(int caso){
     while (numero_medidas < max_medidas){
-    
+
         // realiza las operaciones necesarias para tomar los datos
         esp_cpu_set_cycle_count(0);
 
         // leer datos de tiempo al inicio
-        uint32_t ciclo_inicio = esp_cpu_get_cycle_count(); // 0
-        int64_t t_inicio = esp_timer_get_time();
-
-        vTaskDelay(pdMS_TO_TICKS(10000)); //15 segundos
-
-        i2c_master_write_read_device(I2C_NUM_0, 0x23, &read_command, 1, r, 2, pdMS_TO_TICKS(180));// lectura continua luminosidad
-
-        temperature_sensor_get_celsius(temp_handle, &temp_cpu); //lectura temperatura cpu
-
-        // tiempo de fin
-        ciclo_final = esp_cpu_get_cycle_count();
-        int64_t t_final = esp_timer_get_time();
-
-        //transformacion de datos
-        int32_t ciclos_total = ciclo_final - ciclo_inicio;
-        float t_total = (t_final - t_inicio)/1e6;
-
-        printLocalTime(); // muestra la hora
-        ESP_LOGI(TAG, "La frecuencia es %f H, se han hecho %"PRId32" ciclos, el tiempo de %f, la temperatura es de %f ºC la luminosidad de %d %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1]));
-        ESP_LOGI(TAG, "%"PRId32" %"PRId32"",(int32_t)ciclo_inicio,(int32_t)ciclos_total );
-        ESP_LOGI("EXTERNO: Humedad: %.1f %%\tTemperatura: %.1f °C\n", humedad, temperatura);
-        const char *file_mediciones = MOUNT_POINT"/medcn1.txt";
-        char data[EXAMPLE_MAX_CHAR_SIZE];
-        snprintf(data, EXAMPLE_MAX_CHAR_SIZE, "%s", strftime_buf); 
-        ret = s_example_write_file(file_mediciones, data);
-        if (ret != ESP_OK) {
-            return;
+        ciclo_inicio = esp_cpu_get_cycle_count(); // 0
+        t_inicio = esp_timer_get_time();
+        t_total = 0;
+        
+        //wait
+        flag_ccl_tracker = false;
+        while (t_total < delay_medidas){
+            t_final = esp_timer_get_time();
+            t_total = (t_final - t_inicio)/1e6;
         }
 
-        memset(data, 0, EXAMPLE_MAX_CHAR_SIZE);
-        snprintf(data, EXAMPLE_MAX_CHAR_SIZE, " %f %ld %f %f %d %u %u\n", (float)(ciclos_total/t_total), (int32_t)(ciclos_total), (float)(t_total), (float)(temp_cpu), (int)(r[0]*256 + r[1]), (unsigned int)(r[0]), (unsigned int)(r[1])); 
-        ret = s_example_write_file(file_mediciones, data);
-        if (ret != ESP_OK) {
-            return;
-        }
-
+        //ESP_LOGI(TAG, "%f, %d", t_total, delay_medidas);
+        flag_ccl_tracker = true;
+        tomar_medidas(caso);
+        ciclo_final = 0;
         numero_medidas++;
+
     }
-    vTaskDelete(NULL);
-}*/
+}
 
 //cambios hechos en skconfig:
 //  CONFIG_PM_ENABLE
+//  CONFIG_BLINK_LED_STRIP = y
 void app_main(void)
 {
-    
-
-    
-    /*// inicializacion temperatura
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-    gpio_set_level(pin, 0); 
-    vTaskDelay(pdMS_TO_TICKS(18));
-
-    gpio_set_direction(pin, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
-
-    int age;
-    int startTime =  esp_timer_get_time();
-
-    do {
-      //ESP_LOGI(TAG, "loop");
-      age = (int)(esp_timer_get_time() - startTime);
-      
-      ESP_LOGI(TAG, "init low us: %d", age);
-    }
-    while (gpio_get_level(pin) == 0);
-
-    do {
-      //ESP_LOGI(TAG, "loop");
-      age = (int)(esp_timer_get_time() - startTime);
-      
-      ESP_LOGI(TAG, "init low us: %d", age);
-    }
-    while (gpio_get_level(pin) == 1);
-
-    for ( int8_t i = -3 ; i < 2 * 40; i++ ) { //-3
-
-    //esperando senal 
-    do {
-      //ESP_LOGI(TAG, "loop");
-      age = (int)(esp_timer_get_time() - startTime);
-      if ( age > 90 ) {
-        ESP_LOGI(TAG, "UuuuuuuuuuuuSps %d", age);
-        return;
-      }
-      int expected = (i & 1) ? 1 : 0; //lee el ultimo bit de i
-      ESP_LOGI(TAG, "%d comparado con %d %d %d", gpio_get_level(pin), expected, gpio_get_level(pin) == expected, age);
-    }
-    while (gpio_get_level(pin) == expected);
-
-    if ( i >= 0 && (i & 1) ) {
-      // Now we are being fed our 40 bits
-      //0
-      ESP_LOGI(TAG, "age: %d", age);
-      data_temp <<= 1;
-
-      // A zero max 30 usecs, a one at least 68 usecs.
-      if ( age > 30 ) {
-        ESP_LOGI(TAG, "1");
-        data_temp |= 1; // we got a one
-      }
-    }
-
-    switch ( i ) {
-      case 31:
-        rawHumidity = data_temp;
-        ESP_LOGI(TAG, "humedad: %d", rawHumidity);
-        break;
-      case 63:
-        rawTemperature = data_temp;
-        ESP_LOGI(TAG, "temperatura: %d", rawTemperature);
-        data_temp = 0;
-        break;
-    }
-  }*/
-    
-
-    
+    /* Configure the peripheral according to the LED type */
 
     //### INIT ###
     // sensor temperatura
     xTaskCreate(&dht_task, "dht_task", 2048, NULL, 5, NULL);
+    configure_led();
     // establecer los valores base del cpu
     //(!)
     configuracion_frecuencia(160);
@@ -645,9 +679,10 @@ void app_main(void)
     config_luz.sda_pullup_en = 1;
     config_luz.clk_flags = 0;
     i2c_param_config(I2C_NUM_0, &config_luz);
-    i2c_driver_install(I2C_NUM_0,I2C_MODE_MASTER,0,0,0);
-    
+    i2c_driver_install(I2C_NUM_0,I2C_MODE_MASTER,0,0,0);    
     i2c_master_write_to_device(I2C_NUM_0, 0x23, &w, 1, pdMS_TO_TICKS(180));// encendido sensor luz
+
+ 
 
     //- intento tiemp
     //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -669,13 +704,15 @@ void app_main(void)
     //}
 
     // tiempo (establecido de forma manual)
-    //(!)
+    //(!) 1055
+    int caso_de_uso = 4;
+
     struct tm tm;
     tm.tm_year = 2025 - 1900;
     tm.tm_mon = 6;
-    tm.tm_mday = 18;
-    tm.tm_hour = 9;
-    tm.tm_min = 30;
+    tm.tm_mday = 31;
+    tm.tm_hour = 19;
+    tm.tm_min = 0;
     tm.tm_sec = 0;
     time_t t = mktime(&tm);
     printf("Setting time: %s", asctime(&tm));
@@ -744,6 +781,7 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize bus.");
         return;
+        led_alarm();
     }
 
     // This initializes the slot without card detect (CD) and write protect (WP) signals.
@@ -762,6 +800,7 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "Failed to initialize the card (%s). "
                      "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+        led_alarm();
     #ifdef CONFIG_EXAMPLE_DEBUG_PIN_CONNECTIONS
             check_sd_card_pins(&config, pin_count);
     #endif
@@ -830,215 +869,303 @@ void app_main(void)
     ESP_LOGI(TAG, "*** COMIENZO ***");
 
     //xTaskCreatePinnedToCore(monitoreo, "tarea_monitoreo", 4096, (void*)ret, 2, NULL, tskNO_AFFINITY);
-
-    // tomas multiples casos - 3 iteraciones
-    /*for (int i = 0; i < 3; i++) //repeticiones proceso
-    {
-        for (int j = 0; j < 3; j++) // cada una de las pruebas 
-        {
-            xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
-    
-            while (numero_medidas < max_medidas){
-
-                // realiza las operaciones necesarias para tomar los datos
-                esp_cpu_set_cycle_count(0);
-
-                // leer datos de tiempo al inicio
-                ciclo_inicio = esp_cpu_get_cycle_count(); // 0
-                t_inicio = esp_timer_get_time();
-                t_total = 0;
-                
-
-                //wait
-                while (t_total < delay_medidas){
-                    t_final = esp_timer_get_time();
-                    t_total = (t_final - t_inicio)/1e6;
-                }
-                tomar_medidas();
-
-                numero_medidas++;
-
-            }
-
-            end_benchmark = true;
-            numero_medidas = 0;
-            w_separador();
-
-            switch (j)
-            {
-            case 0:
-                //prepara caso 2
-                end_benchmark = false;
-                configuracion_frecuencia(80);
-                ESP_LOGI(TAG, "prepara caso 2");
-                break;
-            
-            case 1:
-                //prepara caso 3
-                end_benchmark = false;
-                configuracion_frecuencia(160);
-                ESP_LOGI(TAG, "prepara caso 3");
-                break;
-
-            case 2:
-                //para y prepara caso 1
-                vTaskDelay(pdMS_TO_TICKS(20000));//1200000
-                end_benchmark = true;
-                configuracion_frecuencia(160);
-                ESP_LOGI(TAG, "prepara caso 1");
-                break;
-            
-            default:
-                ESP_LOGI(TAG, "ALGO VA MAL%d", i);
-                break;
-            }
-        }
-    }*/
-
-    /*flag_ccl_tracker = true;
-    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
-
-    while (numero_medidas < max_medidas){
-
-        // realiza las operaciones necesarias para tomar los datos
-        esp_cpu_set_cycle_count(0);
-
-        // leer datos de tiempo al inicio
-        ciclo_inicio = esp_cpu_get_cycle_count(); // 0
-        t_inicio = esp_timer_get_time();
-        t_total = 0;
-        
-        flag_ccl_tracker = false;
-        
-        //wait
-        while (t_total < delay_medidas){
-            t_final = esp_timer_get_time();
-            t_total = (t_final - t_inicio)/1e6;
-        }
-        
-        flag_ccl_tracker = true;
-        tomar_medidas();
-        ciclo_final = 0;
-        //w_separador("probando separador");
-
-        numero_medidas++;
-        //delay_medidas = delay_medidas + 10;
-        //vTaskDelay(pdMS_TO_TICKS(1200000));
-
-    }
-
-    end_ccl_tracker = true;
-    end_benchmark = true;
-    numero_medidas = 0;
-    //w_separador();*/
-
-    /*flag_ccl_tracker = true;
-    end_benchmark = false;
-    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
-    w_separador("caso 1 - 160 MHz con carga");
-
-    for (int i = 0; i < 1; i++) //repeticiones proceso
-    {
-        for (int j = 0; j < 3; j++) // cada una de las pruebas 
-        {
-            
-            xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
-    
-            while (numero_medidas < max_medidas){
-
-                // realiza las operaciones necesarias para tomar los datos
-                esp_cpu_set_cycle_count(0);
-
-                // leer datos de tiempo al inicio
-                ciclo_inicio = esp_cpu_get_cycle_count(); // 0
-                t_inicio = esp_timer_get_time();
-                t_total = 0;
-                
-
-                //wait
-                flag_ccl_tracker = false;
-                while (t_total < delay_medidas){
-                    t_final = esp_timer_get_time();
-                    t_total = (t_final - t_inicio)/1e6;
-                }
-                flag_ccl_tracker = true;
-                tomar_medidas();
-                ciclo_final = 0;
-                numero_medidas++;
-
-            }
-
-            end_benchmark = true;
-            numero_medidas = 0;
-
-            switch (j)
-            {
-            case 0:
-                //prepara caso 2
-                w_separador("caso 2 - 80 MHz con carga");
-                max_medidas = 6 * 20;
-                end_benchmark = false;
-                configuracion_frecuencia(80);
-                ESP_LOGI(TAG, "prepara caso 2");
-                break;
-            
-            case 1:
-                //prepara caso 3
-                w_separador("caso 3 - 80 MHz sin carga");
-                end_benchmark = true;
-                configuracion_frecuencia(80);
-                ESP_LOGI(TAG, "prepara caso 3");
-                break;
-
-            case 2:
-                w_separador("FIN");
-                //prepara caso 1
-                end_benchmark = false;
-                configuracion_frecuencia(160);
-                ESP_LOGI(TAG, "prepara caso 1");
-                break;
-            
-            default:
-                ESP_LOGI(TAG, "ALGO VA MAL%d", i);
-                break;
-            }
-        }
-    }*/
-
-    end_benchmark = false;
-    xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
-    w_separador("ANALISIS DIARIO DEL CLIMA: SIN CARGA 160MHz");
-
-    while (numero_medidas < max_medidas){
-
-        // realiza las operaciones necesarias para tomar los datos
-        esp_cpu_set_cycle_count(0);
-
-        // leer datos de tiempo al inicio
-        ciclo_inicio = esp_cpu_get_cycle_count(); // 0
-        t_inicio = esp_timer_get_time();
-        t_total = 0;
-        
-
-        //wait
-        flag_ccl_tracker = false;
-        while (t_total < delay_medidas){
-            t_final = esp_timer_get_time();
-            t_total = (t_final - t_inicio)/1e6;
-        }
-        //vTaskDelay(pdMS_TO_TICKS(delay_medidas * 1000));
-        
-        flag_ccl_tracker = true;
-        tomar_medidas();
-        ciclo_final = 0;
-        numero_medidas++;
-
-    }
-
     end_benchmark = true;
     configuracion_frecuencia(160);
-    end_ccl_tracker = true;
-    end_dht= true;
+
+    /*if (caso_de_uso == 1){
+        // tomas multiples casos - 3 iteraciones
+        for (int i = 0; i < 3; i++) //repeticiones proceso
+        {
+            for (int j = 0; j < 3; j++) // cada una de las pruebas 
+            {
+                xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+        
+                while (numero_medidas < max_medidas){
+
+                    // realiza las operaciones necesarias para tomar los datos
+                    esp_cpu_set_cycle_count(0);
+
+                    // leer datos de tiempo al inicio
+                    ciclo_inicio = esp_cpu_get_cycle_count(); // 0
+                    t_inicio = esp_timer_get_time();
+                    t_total = 0;
+                    
+
+                    //wait
+                    while (t_total < delay_medidas){
+                        t_final = esp_timer_get_time();
+                        t_total = (t_final - t_inicio)/1e6;
+                    }
+                    tomar_medidas();
+
+                    numero_medidas++;
+
+                }
+
+                end_benchmark = true;
+                numero_medidas = 0;
+                w_separador();
+
+                switch (j)
+                {
+                case 0:
+                    //prepara caso 2
+                    end_benchmark = false;
+                    configuracion_frecuencia(80);
+                    ESP_LOGI(TAG, "prepara caso 2");
+                    break;
+                
+                case 1:
+                    //prepara caso 3
+                    end_benchmark = false;
+                    configuracion_frecuencia(160);
+                    ESP_LOGI(TAG, "prepara caso 3");
+                    break;
+
+                case 2:
+                    //para y prepara caso 1
+                    vTaskDelay(pdMS_TO_TICKS(20000));//1200000
+                    end_benchmark = true;
+                    configuracion_frecuencia(160);
+                    ESP_LOGI(TAG, "prepara caso 1");
+                    break;
+                
+                default:
+                    ESP_LOGI(TAG, "ALGO VA MAL%d", i);
+                    break;
+                }
+            }
+        }*/
+    if (caso_de_uso == 1){
+        max_medidas = 5; 
+        delay_medidas = 2; //segundos
+
+        flag_ccl_tracker = true;
+        xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+
+        protocolo_medicion(caso_de_uso);
+
+        configuracion_frecuencia(160);
+        end_ccl_tracker = true;
+        end_benchmark = true;
+        end_dht= true;
+        w_separador("fin");
+
+
+    } else if (caso_de_uso == 2){
+        max_medidas = 10; 
+        delay_medidas = 6 * 60; //segundos
+
+        flag_ccl_tracker = true;
+        end_benchmark = false;
+        xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+        w_separador("ANALISIS CON 3 CONFIGURACIONES: 160MHz SC, 80MHz CC, 160MHz CC");
+        w_separador("caso 1 - 160 MHz con carga");
+
+        for (int i = 0; i < 3; i++) //repeticiones proceso
+        {
+            for (int j = 0; j < 3; j++) // 3, por cada una de las pruebas 
+            {
+                
+                xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+
+                protocolo_medicion(caso_de_uso);
+
+                end_benchmark = true;
+                numero_medidas = 0;
+
+                switch (j)
+                {
+                case 0:
+                    //prepara caso 2
+                    w_separador("caso 2 - 80 MHz con carga");
+                    delay_medidas = 60 * 2;
+                    end_benchmark = false;
+                    configuracion_frecuencia(80);
+                    ESP_LOGI(TAG, "prepara caso 2");
+                    break;
+                
+                case 1:
+                    //prepara caso 3
+                    w_separador("caso 3 - 80 MHz sin carga");
+                    end_benchmark = true;
+                    configuracion_frecuencia(80);
+                    ESP_LOGI(TAG, "prepara caso 3");
+                    break;
+
+                case 2:
+                    w_separador("caso 1 - 160 MHz con carga (o fin)");
+                    //prepara caso 1
+                    end_benchmark = false;
+                    configuracion_frecuencia(160);
+                    ESP_LOGI(TAG, "prepara caso 1");
+                    break;
+                
+                default:
+                    ESP_LOGI(TAG, "ALGO VA MAL%d", i);
+                    break;
+                }
+            }
+        }
+
+        configuracion_frecuencia(160);
+        end_ccl_tracker = true;
+        end_benchmark = true;
+        end_dht= true;
+        w_separador("fin");
+
+    } else if (caso_de_uso == 3){
+        max_medidas = 12 * 12;
+        delay_medidas = 5 * 60; //segundos
+
+        end_benchmark = false;
+        xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+        w_separador("ANALISIS DIARIO DEL CLIMA: SIN CARGA 160MHz");
+
+       protocolo_medicion(caso_de_uso);
+
+        configuracion_frecuencia(160);
+        end_benchmark = true;
+        end_ccl_tracker = true;
+        end_dht= true;
+        w_separador("fin");
+
+
+    } else if (caso_de_uso == 4){
+        max_medidas = 10; 
+        delay_medidas = 6 * 60; //segundos
+
+        flag_ccl_tracker = true;
+        end_benchmark = false;
+        xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+        xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+        w_separador("ANALISIS RENDIMIENTO 2 CONFIGURACIONES: 160MHz SC, 160MHz CC - 300s - 30s");
+
+        w_separador("Calentamiento...");
+        protocolo_medicion(caso_de_uso);
+        numero_medidas = 0;
+        max_medidas = 5; 
+        delay_medidas = 5 * 60; //segundos
+        end_benchmark = true;
+
+        w_separador("caso 1 - 160 MHz sin carga");
+
+        for (int i = 0; i < 5; i++) //repeticiones proceso
+        {
+            for (int j = 0; j < 2; j++) // 2, por cada una de las pruebas 
+            {
+                
+                xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+
+                protocolo_medicion(caso_de_uso);
+
+                end_benchmark = true;
+                numero_medidas = 0;
+
+                switch (j)
+                {
+                case 0:
+                    //prepara caso 2
+                    if (i != 0){
+                        w_separador("caso 2 - 160 MHz con carga");
+                    } else {
+                        w_separador("caso 2 - 80 MHz con carga");
+                    }
+                    
+                    end_benchmark = false;
+                    ESP_LOGI(TAG, "prepara caso 2");
+                    break;
+                
+                case 1:
+                    //prepara caso 1
+                    end_benchmark = true;
+                    if (i != 0){
+                        w_separador("caso 1 - 160 MHz sin carga (o fin)");
+                        configuracion_frecuencia(160);
+                    } else {
+                        w_separador("caso 1 - 80 MHz sin carga (o fin)");
+                        configuracion_frecuencia(80);
+                    }
+                    ESP_LOGI(TAG, "prepara caso 1");
+                    if (i >= 1){
+                        delay_medidas = 30; //segundos
+                        max_medidas = 20; 
+                    }
+                    break;
+                
+                default:
+                    ESP_LOGI(TAG, "ALGO VA MAL%d", i);
+                    break;
+                }
+            }
+        }
+
+        configuracion_frecuencia(160);
+        end_ccl_tracker = true;
+        end_benchmark = true;
+        end_dht= true;
+        w_separador("fin");
+    
+    } else if (caso_de_uso == 5) {
+        max_medidas = 10; 
+        delay_medidas = 30; //segundos
+
+        flag_ccl_tracker = true;
+        end_benchmark = false;
+        xTaskCreate(&ccl_tracker, "conteo de ciclos", 2048, NULL, 1, NULL);
+        w_separador("ANALISIS RENDIMIENTO 2 CONFIGURACIONES: 160MHz SC, 160MHz CC - 30s");
+
+        w_separador("Calentamiento...");
+        protocolo_medicion(caso_de_uso);
+
+        w_separador("caso 1 - 160 MHz con carga");
+
+        for (int i = 0; i < 3; i++) //repeticiones proceso
+        {
+            for (int j = 0; j < 3; j++) // 3, por cada una de las pruebas 
+            {
+                
+                xTaskCreate(&benchmark, "carga", 2048, NULL, 1, NULL);
+
+                protocolo_medicion(caso_de_uso);
+
+                end_benchmark = true;
+                numero_medidas = 0;
+
+                switch (j)
+                {
+                case 0:
+                    //prepara caso 2
+                    w_separador("caso 2 - 160 MHz con carga");
+                    end_benchmark = false;
+                    configuracion_frecuencia(160);
+                    ESP_LOGI(TAG, "prepara caso 2");
+                    break;
+                
+                case 1:
+                    w_separador("caso 1 - 160 MHz con carga (o fin)");
+                    //prepara caso 1
+                    end_benchmark = true;
+                    configuracion_frecuencia(160);
+                    ESP_LOGI(TAG, "prepara caso 1");
+                    break;
+                
+                default:
+                    ESP_LOGI(TAG, "ALGO VA MAL%d", i);
+                    break;
+                }
+            }
+        }
+
+        configuracion_frecuencia(160);
+        end_ccl_tracker = true;
+        end_benchmark = true;
+        end_dht= true;
+        w_separador("fin");
+    
+    }
+    
+
 
     temperature_sensor_disable(temp_handle);
 
@@ -1068,6 +1195,7 @@ void app_main(void)
 
     //----
     ESP_LOGI(TAG, "*** FIN ***");
+    xTaskCreate(led_finish, "ok_feedback", 2048, NULL, 5, NULL);
 
 }
 

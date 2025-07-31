@@ -1,4 +1,4 @@
-# Install script for directory: C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/components/dht22
+# Install script for directory: C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/managed_components/espressif__led_strip
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)

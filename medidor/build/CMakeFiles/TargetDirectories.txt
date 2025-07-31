@@ -812,6 +812,13 @@ C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__esp
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__esp-dsp/CMakeFiles/install.dir
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__esp-dsp/CMakeFiles/install/local.dir
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__esp-dsp/CMakeFiles/install/strip.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/__idf_espressif__led_strip.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/edit_cache.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/rebuild_cache.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/list_install_components.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/install.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/install/local.dir
+C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/espressif__led_strip/CMakeFiles/install/strip.dir
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/main/CMakeFiles/__idf_main.dir
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/main/CMakeFiles/edit_cache.dir
 C:/Users/manua/Escritorio/programas/TFG/TFG/medidor/build/esp-idf/main/CMakeFiles/rebuild_cache.dir
